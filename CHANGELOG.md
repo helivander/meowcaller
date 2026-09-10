@@ -7,6 +7,17 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/call_end — `implemented`
+
+- Outgoing 1:1 calls no longer end when, after one of the peer's devices
+  accepts, the peer's other devices echo `terminate`/`reject` for the same
+  call-id. Only the accepting device (or the relay-elected device when the
+  accept was unqualified) ends an answered call; ends before the accept, from
+  the server, or from other accounts are unchanged. Covered by lifecycle unit
+  tests. The echo filter ran live in a downstream fork against multi-device
+  peers; the relay-elected exception is unit-tested only. There is no
+  reference vector for this path.
+
 ### media/group-runtime — `KAT-verified`
 
 - Hardened live group-call teardown by closing and detaching audio endpoints,

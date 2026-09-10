@@ -723,6 +723,12 @@ func (c *Call) OnPeerAccept(fn func()) {
 	}
 }
 
+func (c *Call) isPeerAccepted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peerAccepted
+}
+
 func (c *Call) markPeerAccepted() {
 	c.mu.Lock()
 	c.peerAccepted = true
