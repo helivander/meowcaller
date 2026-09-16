@@ -620,6 +620,36 @@ func TestPeerDeviceTerminateBeforeAcceptEndsCall(t *testing.T) {
 	}
 }
 
+func TestCompanionRejectBeforeAcceptKeepsCall(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	var ended int
+	call.OnEnd(func(string) { ended++ })
+	eng.onPreAccept(&events.CallPreAccept{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(4)}})
+
+	eng.onReject(&events.CallReject{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(5)}})
+	if ended != 0 || call.State() == CallPhaseEnded || eng.lookup("CID") == nil {
+		t.Fatalf("companion reject ended a ringing call: ended=%d phase=%d", ended, call.State())
+	}
+
+	acceptFrom(eng, peerJID())
+	if ended != 0 || call.State() == CallPhaseEnded {
+		t.Fatalf("phone accept after companion reject: ended=%d phase=%d", ended, call.State())
+	}
+}
+
+func TestPrimaryDeviceRejectBeforeAcceptEndsCall(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	var reason string
+	call.OnEnd(func(r string) { reason = r })
+	eng.onPreAccept(&events.CallPreAccept{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(4)}})
+
+	eng.onReject(&events.CallReject{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerJID()}})
+
+	if call.State() != CallPhaseEnded || reason != "rejected" {
+		t.Fatalf("phase = %d reason = %q, want Ended rejected", call.State(), reason)
+	}
+}
+
 func TestFinishCallClosesAttachedAudioDevices(t *testing.T) {
 	source := &lifecycleAudioSource{}
 	sink := &lifecycleAudioSink{}

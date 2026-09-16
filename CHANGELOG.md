@@ -17,6 +17,11 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
   tests. The echo filter ran live in a downstream fork against multi-device
   peers; the relay-elected exception is unit-tested only. There is no
   reference vector for this path.
+- Outgoing 1:1 calls no longer end when a peer companion device (device != 0)
+  rejects while the call is still ringing: in production the companion's
+  reject arrived seconds before the primary phone answered. Rejects from the
+  primary device, unqualified rejects and terminates are unchanged. Covered by
+  lifecycle unit tests only.
 
 ### media/group-runtime — `KAT-verified`
 

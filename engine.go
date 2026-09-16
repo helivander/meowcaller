@@ -967,6 +967,9 @@ func (e *engine) onReject(ev *events.CallReject) {
 	if e.isNonAnsweringDeviceEcho(m, ev.CallID, ev.From, "reject") {
 		return
 	}
+	if e.isCompanionRejectBeforeAccept(m, ev.CallID, ev.From) {
+		return
+	}
 	e.c.log.Info().
 		Str("call_id", ev.CallID).
 		Str("from", ev.From.String()).
@@ -1271,6 +1274,23 @@ func (e *engine) isNonAnsweringDeviceEcho(m *engineCall, callID string, from typ
 		Str("accepted_by", accepted.String()).
 		Str("peer_lid", peerLID).
 		Msg("ignoring call end from a non-answering peer device")
+	return true
+}
+
+// isCompanionRejectBeforeAccept reports whether a reject for a still-ringing
+// outgoing 1:1 call came from one of the peer's companion devices.
+func (e *engine) isCompanionRejectBeforeAccept(m *engineCall, callID string, from types.JID) bool {
+	// A companion (device != 0: WhatsApp Web/Desktop, linked devices) can reject
+	// on its own while the primary phone (device 0) is still ringing. Ending the
+	// call there drops it just as the phone answers. The phone's own reject, an
+	// unqualified reject and the peer's terminate still end the call.
+	if from.IsEmpty() || from.Device == 0 || m.group || m.direction != CallDirectionOutgoing || m.call == nil || m.call.isPeerAccepted() {
+		return false
+	}
+	e.c.log.Info().
+		Str("call_id", callID).
+		Str("from", from.String()).
+		Msg("ignoring reject from a peer companion device before accept")
 	return true
 }
 
