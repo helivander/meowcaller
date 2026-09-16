@@ -165,15 +165,8 @@ func (e *engine) install() {
 		case *events.CallTransport:
 			e.onRelay(ev.CallID, ev.Data)
 		case *events.CallTerminate:
-			e.c.log.Info().Str("call_id", ev.CallID).Str("from", ev.From.String()).Str("reason", ev.Reason).Msg("terminate received")
-			if e.fromNonAnsweringDevice(ev.CallID, ev.From, "terminate", ev.Reason) {
-				return
-			}
-			e.onTerminate(ev.CallID, ev.Reason)
+			e.onTerminate(ev)
 		case *events.CallReject:
-			if e.fromNonAnsweringDevice(ev.CallID, ev.From, "reject", "") {
-				return
-			}
 			e.onReject(ev)
 		case *events.UnknownCallEvent:
 			e.onUnknownCallEvent(ev.Node)
@@ -971,6 +964,9 @@ func (e *engine) onReject(ev *events.CallReject) {
 	if m == nil {
 		return
 	}
+	if e.isNonAnsweringDeviceEcho(m, ev.CallID, ev.From, "reject") {
+		return
+	}
 	e.c.log.Info().
 		Str("call_id", ev.CallID).
 		Str("from", ev.From.String()).
@@ -1237,41 +1233,45 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 }
 
 // onTerminate tears down a call's media and fires the Call's OnEnd listener.
-// fromNonAnsweringDevice reports whether a terminate/reject came from a device
-// of the peer OTHER than the one that answered. After one device accepts, the
-// remaining devices of that account stop ringing and echo terminate/reject for
-// the same call-id; treating those as the end of the call drops an active call
-// on our side while the answering phone stays connected.
-func (e *engine) fromNonAnsweringDevice(callID string, from types.JID, kind, reason string) bool {
-	if from.IsEmpty() {
-		return false
+func (e *engine) onTerminate(ev *events.CallTerminate) {
+	if m := e.lookup(ev.CallID); m != nil && e.isNonAnsweringDeviceEcho(m, ev.CallID, ev.From, "terminate") {
+		return
 	}
-	m := e.lookup(callID)
-	if m == nil || m.call == nil || !m.call.isPeerAccepted() {
+	e.c.log.Info().
+		Str("call_id", ev.CallID).
+		Str("from", ev.From.String()).
+		Str("reason", ev.Reason).
+		Msg("call terminated")
+	e.finishCall(ev.CallID, ev.Reason)
+}
+
+// isNonAnsweringDeviceEcho reports whether a terminate or reject for an
+// answered outgoing 1:1 call came from one of the peer's other devices.
+func (e *engine) isNonAnsweringDeviceEcho(m *engineCall, callID string, from types.JID, kind string) bool {
+	// Once one device answers, the peer's remaining devices stop ringing and
+	// send their own terminate/reject for the same call-id. Only the answering
+	// device (the accept sender, or the relay-elected device when the accept
+	// was unqualified) can end the call.
+	if from.IsEmpty() || m.group || m.direction != CallDirectionOutgoing || m.call == nil || !m.call.isPeerAccepted() {
 		return false
 	}
 	e.mu.Lock()
-	answered := m.from
+	accepted, peerLID := m.from, m.peerLID
 	e.mu.Unlock()
-	if answered.IsEmpty() || answered.User != from.User || answered.Server != from.Server {
+	if accepted.IsEmpty() || accepted.User != from.User || accepted.Server != from.Server || accepted.Device == from.Device {
 		return false
 	}
-	if answered.Device == from.Device {
+	if elected, err := types.ParseJID(peerLID); err == nil && elected.User == from.User && elected.Server == from.Server && elected.Device == from.Device {
 		return false
 	}
 	e.c.log.Info().
 		Str("call_id", callID).
 		Str("kind", kind).
 		Str("from", from.String()).
-		Str("answered_by", answered.String()).
-		Str("reason", reason).
-		Msg("ignoring stanza from a non-answering peer device")
+		Str("accepted_by", accepted.String()).
+		Str("peer_lid", peerLID).
+		Msg("ignoring call end from a non-answering peer device")
 	return true
-}
-
-func (e *engine) onTerminate(callID, reason string) {
-	e.c.log.Info().Str("call_id", callID).Str("reason", reason).Msg("call terminated")
-	e.finishCall(callID, reason)
 }
 
 func (e *engine) finishCall(callID, reason string) {

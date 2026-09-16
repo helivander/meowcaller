@@ -564,6 +564,62 @@ func TestPeerRejectEndsCall(t *testing.T) {
 	}
 }
 
+func peerDevice(device uint16) types.JID {
+	jid := peerJID()
+	jid.Device = device
+	return jid
+}
+
+func acceptFrom(eng *engine, from types.JID) {
+	eng.onAccept(&events.CallAccept{
+		BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: from},
+		Data:          &waBinary.Node{Tag: "accept"},
+	})
+}
+
+func TestNonAnsweringPeerDeviceEchoKeepsCall(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	var ended int
+	call.OnEnd(func(string) { ended++ })
+	acceptFrom(eng, peerJID())
+
+	eng.onTerminate(&events.CallTerminate{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(22)}})
+	eng.onReject(&events.CallReject{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(23)}})
+
+	if ended != 0 || call.State() == CallPhaseEnded || eng.lookup("CID") == nil {
+		t.Fatalf("echo ended the call: ended=%d phase=%d", ended, call.State())
+	}
+
+	eng.onTerminate(&events.CallTerminate{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerJID()}, Reason: "hangup"})
+	if ended != 1 || call.State() != CallPhaseEnded {
+		t.Fatalf("answering device hangup: ended=%d phase=%d, want 1 Ended", ended, call.State())
+	}
+}
+
+func TestTerminateFromRelayElectedDeviceEndsCall(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	m := eng.calls[call.ID()]
+	m.peerLID = peerDevice(7).String()
+	acceptFrom(eng, peerJID())
+
+	eng.onTerminate(&events.CallTerminate{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(7)}})
+
+	if got := call.State(); got != CallPhaseEnded {
+		t.Fatalf("phase = %d, want Ended", got)
+	}
+}
+
+func TestPeerDeviceTerminateBeforeAcceptEndsCall(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	eng.onPreAccept(&events.CallPreAccept{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerJID()}})
+
+	eng.onTerminate(&events.CallTerminate{BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: peerDevice(22)}})
+
+	if got := call.State(); got != CallPhaseEnded {
+		t.Fatalf("phase = %d, want Ended", got)
+	}
+}
+
 func TestFinishCallClosesAttachedAudioDevices(t *testing.T) {
 	source := &lifecycleAudioSource{}
 	sink := &lifecycleAudioSink{}
