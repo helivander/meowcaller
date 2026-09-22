@@ -113,12 +113,24 @@ func (e *engine) maybeStartMedia(callID string) {
 // NOT VALIDATED: live-relay only.
 func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, inbound bool) (*relay.RelayMediaChannel, []byte, error) {
 	log := e.c.log
-	ep := getMediaRelayEndpoint(rd, inbound)
+	ep := getMediaRelayEndpoint(rd)
 	if ep == nil || len(ep.addresses) == 0 {
 		return nil, nil, fmt.Errorf("relay has no usable endpoint")
 	}
 	addr := &net.UDPAddr{IP: net.ParseIP(ep.addresses[0].ipv4), Port: int(ep.addresses[0].port)}
-	log.Info().Str("relay_name", ep.relayName).Str("addr", addr.String()).Msg("connecting media transport to relay")
+	candidates := make([]string, 0, len(rd.endpoints))
+	for i := range rd.endpoints {
+		c := &rd.endpoints[i]
+		caddr := "-"
+		if len(c.addresses) > 0 {
+			caddr = fmt.Sprintf("%s:%d", c.addresses[0].ipv4, c.addresses[0].port)
+		}
+		candidates = append(candidates, fmt.Sprintf("%s@%s fna=%t token=%d auth=%d", c.relayName, caddr, c.isFNA, c.tokenID, c.authTokenID))
+	}
+	// The whole block goes to the log once per call: which endpoint was dialed, and
+	// what the alternatives were, is the first thing to check on a one-way call.
+	log.Info().Str("relay_name", ep.relayName).Str("addr", addr.String()).Bool("inbound", inbound).
+		Strs("candidates", candidates).Msg("connecting media transport to relay")
 	e.c.diag.Emit("relay", map[string]any{
 		"event": "endpoint", "relay_name": ep.relayName,
 		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
@@ -508,7 +520,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if update != nil && update.Relay != nil {
 					var relayTx [12]byte
 					if _, err := rand.Read(relayTx[:]); err == nil {
-						endpoint := getMediaRelayEndpoint(rd, inbound)
+						endpoint := getMediaRelayEndpoint(rd)
 						allocateSent, err = allocateState.ApplyWithSubscriptions(
 							endpoint,
 							update.Relay,
@@ -713,7 +725,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			return fmt.Errorf("generate group relay transaction ID: %w", err)
 		}
 		_, err = allocateState.ApplyWithSubscriptions(
-			getMediaRelayEndpoint(rd, inbound),
+			getMediaRelayEndpoint(rd),
 			update.Relay,
 			streamSsrcs,
 			appDataSelfSsrc,

@@ -1713,30 +1713,45 @@ func parseRelayData(node *waBinary.Node) *relayData {
 	return rd
 }
 
-// getMediaRelayEndpoint prefers an outbound (non-FNA, auth_token_id≠0) endpoint, else
-// any non-FNA, else the first. For an inbound call the caller's uplink RTP lands on their
-// FNA-marked relay, so we must allocate on that same relay or the relay never bridges the
-// peer's media (the callee connects but hears nothing).
-func getMediaRelayEndpoint(rd *relayData, inbound bool) *relayEndpoint {
-	if inbound {
-		for i := range rd.endpoints {
-			if e := &rd.endpoints[i]; e.isFNA {
-				return e
+// webClientRelayPort is the port a web client's relay media rides on. Only relays
+// answering here route a web client's media in both directions; one on 3478 completes
+// the handshake and carries our uplink but never forwards the peer's stream back
+// (whatsapp-rust issue #1098; wacore/src/voip_control/relay_parse.rs).
+const webClientRelayPort = 3480
+
+// getMediaRelayEndpoint picks the relay endpoint to connect the MEDIA transport to,
+// mirroring whatsapp-rust's get_media_relay_endpoint: an endpoint on the web client
+// port first, else an outbound relaylatency candidate (non-FNA, auth_token_id≠0),
+// else any non-FNA, else the first. At each tier a usable endpoint (an IPv4 address
+// to dial and a token we hold) is preferred; if nothing is usable the same tiers run
+// again without that filter, so the caller still fails with a precise token error.
+//
+// Direction no longer changes the choice. The previous FNA-first rule for inbound
+// calls picked a 3478 endpoint whenever the block carried no FNA entry, and the
+// callee then connected, sent its uplink and never heard the caller.
+func getMediaRelayEndpoint(rd *relayData) *relayEndpoint {
+	usable := func(e *relayEndpoint) bool {
+		return len(e.addresses) > 0 && e.addresses[0].ipv4 != "" &&
+			int(e.tokenID) < len(rd.relayTokens) && len(rd.relayTokens[e.tokenID]) > 0
+	}
+	onWebClientPort := func(e *relayEndpoint) bool {
+		return len(e.addresses) > 0 && e.addresses[0].port == webClientRelayPort
+	}
+	tiers := []func(*relayEndpoint) bool{
+		onWebClientPort,
+		func(e *relayEndpoint) bool { return !e.isFNA && e.authTokenID != 0 },
+		func(e *relayEndpoint) bool { return !e.isFNA },
+		func(*relayEndpoint) bool { return true },
+	}
+	for _, usableOnly := range []bool{true, false} {
+		for _, tier := range tiers {
+			for i := range rd.endpoints {
+				e := &rd.endpoints[i]
+				if tier(e) && (!usableOnly || usable(e)) {
+					return e
+				}
 			}
 		}
-	}
-	for i := range rd.endpoints {
-		if e := &rd.endpoints[i]; !e.isFNA && e.authTokenID != 0 {
-			return e
-		}
-	}
-	for i := range rd.endpoints {
-		if e := &rd.endpoints[i]; !e.isFNA {
-			return e
-		}
-	}
-	if len(rd.endpoints) > 0 {
-		return &rd.endpoints[0]
 	}
 	return nil
 }

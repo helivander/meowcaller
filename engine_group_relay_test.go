@@ -23,7 +23,7 @@ func TestGroupRelayDataSelectsCaptureAddressAndCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("groupRelayData: %v", err)
 	}
-	endpoint := getMediaRelayEndpoint(rd, false)
+	endpoint := getMediaRelayEndpoint(rd)
 	if endpoint == nil || endpoint.relayName != "zrh1c01" ||
 		endpoint.addresses[0].ipv4 != "157.240.17.62" ||
 		endpoint.addresses[0].port != 3478 {

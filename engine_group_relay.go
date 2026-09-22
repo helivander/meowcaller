@@ -170,7 +170,7 @@ func groupRelayData(update groupCallUpdate, inbound bool) (*relayData, error) {
 			addresses: []relayAddress{{ipv4: endpoint.IPv4, port: endpoint.Port}},
 		})
 	}
-	if getMediaRelayEndpoint(rd, inbound) == nil {
+	if getMediaRelayEndpoint(rd) == nil {
 		return nil, fmt.Errorf("meowcaller: group relay has no usable endpoint")
 	}
 	return rd, nil
