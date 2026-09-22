@@ -160,9 +160,11 @@ func (e *engine) install() {
 		case *events.CallAccept:
 			e.onAccept(ev)
 		case *events.CallRelayLatency:
+			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.XMLString()).Msg("relaylatency from peer")
 			e.onRelay(ev.CallID, ev.Data)
 			e.onRelayLatency(ev)
 		case *events.CallTransport:
+			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.XMLString()).Msg("transport from peer")
 			e.onRelay(ev.CallID, ev.Data)
 		case *events.CallTerminate:
 			e.onTerminate(ev)
@@ -228,6 +230,15 @@ func (e *engine) transmitCallNode(ctx context.Context, node waBinary.Node) error
 		return errors.New("meowcaller: call signaling is unavailable")
 	}
 	return e.sendCallNode(ctx, node)
+}
+
+// nextRequestID is the stanza id for a call node that the server must relay (accept,
+// preaccept): whatsmeow's request id when a client is attached, random otherwise.
+func (e *engine) nextRequestID() string {
+	if e.c != nil && e.c.wa != nil {
+		return e.c.wa.DangerousInternals().GenerateRequestID()
+	}
+	return e.nextCallNodeID()
 }
 
 func (e *engine) nextCallNodeID() string {
@@ -683,15 +694,24 @@ func (e *engine) answer(c *Call) error {
 	}
 	e.mu.Lock()
 	m.acceptPending = true
+	from, creator := m.from, m.creator
 	e.mu.Unlock()
 
 	c.setPhase(CallPhaseConnecting)
+	// Accept before the media comes up, as whatsapp-rust does (src/voip/facade.rs:
+	// preaccept → prepare → accept → open media). With the accept deferred to the
+	// caller's first <mute_v2>, the relay bridged the caller's media for a few
+	// packets only: on the accept the caller re-bound its media path, and the
+	// allocation made before it was left out — the callee kept sending and heard
+	// nothing more (measured on 2026-09-22: 3 packets, then silence).
+	e.sendAccept(c.id, from, creator)
 	e.maybeStartMedia(c.id)
 	return nil
 }
 
-// sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
-// single rate — the peer keeps the call alive with this; capability+both-rates fails).
+// sendAccept sends the callee <accept> once: from answer() as soon as the call is
+// answered or, failing that, on the caller's first <mute_v2> (onCallRaw). Single
+// audio rate, as WA Web sends it.
 func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	e.mu.Lock()
 	m := e.calls[callID]
@@ -703,18 +723,28 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	m.acceptPending = false
 	e.mu.Unlock()
 
-	accept := signaling.BuildAccept(&signaling.AcceptParams{
+	params := &signaling.AcceptParams{
 		CallID: callID, To: to, CallCreator: creator,
 		AudioRates: []string{"16000"},
-		Metadata:   waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
 		Video:      isVideo,
-	})
-	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), accept); err != nil {
+	}
+	// whatsapp-rust (build_answer_signaling): an audio accept advertises the MLOW
+	// capability and carries no metadata; a video accept mirrors the offer's
+	// experiment metadata and carries no capability.
+	if isVideo {
+		params.Metadata = waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"}
+	} else {
+		params.Capability = append([]byte(nil), signaling.CapabilityOffer...)
+	}
+	accept := signaling.BuildAccept(params)
+	// The <call> wrapper id is load-bearing: the server drops an idless accept and the
+	// caller never learns the call was answered.
+	accept.Attrs["id"] = e.nextRequestID()
+	if err := e.transmitCallNode(context.Background(), accept); err != nil {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
 		return
 	}
-	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted (after mute_v2)")
+	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted")
 }
 
 // reject declines an inbound call.
