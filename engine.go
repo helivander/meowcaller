@@ -827,6 +827,21 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	if rl == nil {
 		return
 	}
+	// The echo is our vote in the relay election: a relay we answer for is one the
+	// caller may settle on. Only relays from our own <relay> block can carry our
+	// media, so a relay the caller measured but we were never offered is not echoed.
+	// Echoing everything let the caller elect a relay we never connect to (e.g. a
+	// nearer fvix24c01 absent from our offer): the call came up and the caller's
+	// voice never reached us.
+	e.mu.Lock()
+	var ours map[string]bool
+	if m.relay != nil && len(m.relay.endpoints) > 0 {
+		ours = make(map[string]bool, len(m.relay.endpoints))
+		for _, ep := range m.relay.endpoints {
+			ours[ep.relayName] = true
+		}
+	}
+	e.mu.Unlock()
 	var probes []rlProbe
 	for i := range rl.GetChildren() {
 		te := &rl.GetChildren()[i]
@@ -834,6 +849,11 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 			continue
 		}
 		ag := te.AttrGetter()
+		if ours != nil && !ours[ag.String("relay_name")] {
+			e.c.log.Info().Str("call_id", ev.CallID).Str("relay_name", ag.String("relay_name")).
+				Msg("relaylatency not echoed: relay not in our offer")
+			continue
+		}
 		probes = append(probes, rlProbe{
 			latency:   decodeLatency(ag.String("latency")),
 			relayName: ag.String("relay_name"),
