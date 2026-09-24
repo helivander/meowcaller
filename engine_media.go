@@ -107,97 +107,6 @@ func (e *engine) maybeStartMedia(callID string) {
 	}()
 }
 
-const (
-	relayConnectTimeout = 12 * time.Second
-	// webPortGrace is how long the advertised port, once connected, waits for the
-	// web client port to finish its own handshake before settling for itself.
-	webPortGrace = 2 * time.Second
-)
-
-// dialRelayMedia dials the advertised relay address and, on the same IP, the web
-// client port (3480) concurrently, and keeps 3480 whenever it completes the handshake.
-//
-// Which port a relay serves a web client on is not derivable from the offer and varies
-// per host and per session (whatsapp-rust src/voip/transport/native.rs, dial_candidates):
-// a relay advertised on 3478 may complete the handshake there, take our uplink and never
-// forward the peer's stream, while the same host on 3480 carries both directions. That is
-// the incoming call that reached the PBX without the caller's voice. Unlike a plain race,
-// 3480 wins even when 3478 answers first; the advertised port is kept only if 3480 fails
-// or has not answered within webPortGrace. The STUN allocate still names the advertised
-// endpoint, as whatsapp-rust does. Losing channels are closed.
-func dialRelayMedia(ctx context.Context, addr *net.UDPAddr, log zerolog.Logger) (*relay.RelayMediaChannel, *net.UDPAddr, error) {
-	addrs := []*net.UDPAddr{addr}
-	if addr.Port != webClientRelayPort {
-		addrs = append(addrs, &net.UDPAddr{IP: addr.IP, Port: webClientRelayPort})
-	}
-	type result struct {
-		addr *net.UDPAddr
-		ch   *relay.RelayMediaChannel
-		err  error
-	}
-	done := make(chan result, len(addrs))
-	for _, a := range addrs {
-		go func() {
-			ch, err := relay.ConnectRelayMedia(a, relay.WithLogger(log))
-			done <- result{a, ch, err}
-		}()
-	}
-	pending := len(addrs)
-	// Dials still in flight when we return are drained and closed in the background.
-	settle := func(keep result) (*relay.RelayMediaChannel, *net.UDPAddr, error) {
-		for n := pending; n > 0; n-- {
-			go func() {
-				if r := <-done; r.ch != nil {
-					_ = r.ch.Close()
-				}
-			}()
-		}
-		return keep.ch, keep.addr, nil
-	}
-
-	var advertised *result
-	var grace <-chan time.Time
-	var errs []string
-	deadline := time.After(relayConnectTimeout)
-	for pending > 0 {
-		select {
-		case r := <-done:
-			pending--
-			if r.err != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", r.addr, r.err))
-				continue
-			}
-			if r.addr.Port == webClientRelayPort {
-				if advertised != nil {
-					_ = advertised.ch.Close()
-				}
-				return settle(r)
-			}
-			advertised = &r
-			grace = time.After(webPortGrace)
-		case <-grace:
-			log.Debug().Str("addr", addr.String()).Msg("web client relay port did not answer in time; keeping the advertised port")
-			return settle(*advertised)
-		case <-deadline:
-			if advertised != nil {
-				return settle(*advertised)
-			}
-			settle(result{})
-			return nil, nil, fmt.Errorf("relay connect timed out (DTLS didn't complete); tried %v", addrs)
-		case <-ctx.Done():
-			if advertised != nil {
-				_ = advertised.ch.Close()
-			}
-			settle(result{})
-			return nil, nil, ctx.Err()
-		}
-	}
-	if advertised != nil {
-		return advertised.ch, advertised.addr, nil
-	}
-	return nil, nil, fmt.Errorf("relay connect: %v", errs)
-}
-
 // connectAndAllocate opens the relay DataChannel and sends the STUN allocate, returning
 // the channel and the allocate bytes (re-sent by the keepalive).
 //
@@ -227,12 +136,28 @@ func (e *engine) connectAndAllocate(ctx context.Context, rd *relayData, streamSs
 		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
 	})
 
-	ch, connected, err := dialRelayMedia(ctx, addr, log)
-	if err != nil {
-		return nil, nil, err
+	type result struct {
+		ch  *relay.RelayMediaChannel
+		err error
 	}
-	log.Info().Str("relay_name", ep.relayName).Str("connected", connected.String()).
-		Bool("advertised_port", connected.Port == addr.Port).Msg("relay DataChannel open")
+	done := make(chan result, 1)
+	go func() {
+		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
+		done <- result{ch, err}
+	}()
+	var ch *relay.RelayMediaChannel
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return nil, nil, fmt.Errorf("relay connect: %w", r.err)
+		}
+		ch = r.ch
+	case <-time.After(12 * time.Second):
+		return nil, nil, fmt.Errorf("relay connect timed out (DTLS didn't complete)")
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
 
 	if int(ep.tokenID) >= len(rd.relayTokens) || rd.relayTokens[ep.tokenID] == nil {
 		ch.Close()
