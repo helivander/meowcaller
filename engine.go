@@ -160,11 +160,11 @@ func (e *engine) install() {
 		case *events.CallAccept:
 			e.onAccept(ev)
 		case *events.CallRelayLatency:
-			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.XMLString()).Msg("relaylatency from peer")
+			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.String()).Msg("relaylatency from peer")
 			e.onRelay(ev.CallID, ev.Data)
 			e.onRelayLatency(ev)
 		case *events.CallTransport:
-			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.XMLString()).Msg("transport from peer")
+			e.c.log.Info().Str("call_id", ev.CallID).Str("stanza", ev.Data.String()).Msg("transport from peer")
 			e.onRelay(ev.CallID, ev.Data)
 		case *events.CallTerminate:
 			e.onTerminate(ev)
